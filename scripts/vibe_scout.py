@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 XAI_API_KEY = os.getenv("XAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@your_channel")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GH_TOKEN = os.getenv("GH_TOKEN")
 CACHE_DIR = os.getenv("CACHE_DIR", "cache_vibe")
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -88,11 +88,11 @@ async def scrape_tool_page(url: str) -> dict:
 
 
 async def check_github_updates():
-    if not GITHUB_TOKEN:
-        logger.info("GITHUB_TOKEN not set, skipping GitHub updates")
+    if not GH_TOKEN:
+        logger.info("GH_TOKEN not set, skipping GitHub updates")
         return
 
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     async with aiohttp.ClientSession() as session:
         # Check for new issues
         async with session.get("https://api.github.com/repos/user/repo/issues?state=open&per_page=5", headers=headers) as resp:
