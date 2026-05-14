@@ -2,3 +2,4 @@ aiohttp>=3.9
 aiogram>=3.0
 beautifulsoup4>=4.12
 groq>=0.15.0
+feedparser>=6.0
