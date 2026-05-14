@@ -1,0 +1,5 @@
+.env
+cache_vibe/
+__pycache__/
+*.pyc
+*.log
