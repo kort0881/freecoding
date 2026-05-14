@@ -1,3 +1,4 @@
+# .gitignore
 .env
 cache_vibe/
 __pycache__/

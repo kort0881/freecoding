@@ -2,14 +2,13 @@
 """
 Vibe Coding Scout – сбор бесплатных инструментов для вайб-кодинга.
 Источники: GitHub Search API, прямые страницы сервисов.
-Анализ: xAI Grok.
+Анализ: Groq (LLaMA 3.3 70B).
 Публикация: Telegram.
 """
 
 import os
 import json
 import asyncio
-import re
 import time
 import hashlib
 import html
@@ -21,7 +20,7 @@ from bs4 import BeautifulSoup
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from openai import OpenAI
+from groq import Groq
 
 # ============ ЛОГИРОВАНИЕ ============
 logging.basicConfig(
@@ -39,20 +38,17 @@ def get_env(name: str) -> str:
         raise SystemExit(1)
     return val
 
-XAI_API_KEY = get_env("XAI_API_KEY")
+GROQ_API_KEY = get_env("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = get_env("CHANNEL_ID")  # @channel или -100...
+CHANNEL_ID = get_env("CHANNEL_ID")  # @EMC1_4
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")  # опционально, увеличивает лимиты API
 
 CACHE_DIR = os.getenv("CACHE_DIR", "cache_vibe")
 os.makedirs(CACHE_DIR, exist_ok=True)
 STATE_FILE = os.path.join(CACHE_DIR, "state_vibe.json")
 
-# ============ КЛИЕНТ Grok ============
-xai_client = OpenAI(
-    api_key=XAI_API_KEY,
-    base_url="https://api.x.ai/v1",
-)
+# ============ КЛИЕНТ Groq ============
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ============ ИСТОЧНИКИ ============
 GITHUB_QUERIES = [
@@ -62,7 +58,6 @@ GITHUB_QUERIES = [
     "google ai studio", "ai website builder open source"
 ]
 
-# Реальные сервисы для прямого парсинга (проверка бесплатности)
 SERVICE_PAGES = [
     {"name": "Bolt.new", "url": "https://bolt.new"},
     {"name": "Lovable", "url": "https://lovable.dev"},
@@ -120,46 +115,53 @@ async def fetch_github_repos(session: aiohttp.ClientSession) -> list[dict]:
 
     repos = []
     for query in GITHUB_QUERIES:
-        # Ищем только публичные репозитории, созданные за последние 30 дней
         date_filter = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
         url = (
             f"https://api.github.com/search/repositories"
             f"?q={query}+is:public+created:>={date_filter}"
             f"&sort=stars&order=desc&per_page=5"
         )
-        try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status != 200:
-                    logger.warning(f"GitHub API status {resp.status} for query '{query}'")
-                    continue
-                data = await resp.json()
-                for item in data.get("items", []):
-                    uid = f"gh_{item['id']}"
-                    if state.is_posted(uid):
+        for attempt in range(3):
+            try:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status == 403 or resp.status == 429:
+                        remaining = resp.headers.get("X-RateLimit-Remaining", "0")
+                        reset_at = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
+                        wait = max(reset_at - time.time() + 1, 10)
+                        logger.warning(f"Rate limit hit for '{query}'. Waiting {wait:.0f}s")
+                        await asyncio.sleep(wait)
                         continue
-                    # Простейший фильтр: минимум 1 звезда и описание
-                    if item.get("stargazers_count", 0) < 1:
-                        continue
-                    if not item.get("description"):
-                        continue
-                    repos.append({
-                        "uid": uid,
-                        "type": "github",
-                        "name": item["full_name"],
-                        "description": item["description"],
-                        "stars": item["stargazers_count"],
-                        "url": item["html_url"],
-                        "updated_at": item["updated_at"],
-                        "topics": item.get("topics", []),
-                        "language": item.get("language"),
-                    })
-            await asyncio.sleep(1.5)  # rate limit без токена 10 запросов/мин, с токеном 30
-        except Exception as e:
-            logger.warning(f"GitHub search error for '{query}': {e}")
+                    if resp.status != 200:
+                        logger.warning(f"GitHub API status {resp.status} for query '{query}'")
+                        break
+                    data = await resp.json()
+                    for item in data.get("items", []):
+                        uid = f"gh_{item['id']}"
+                        if state.is_posted(uid):
+                            continue
+                        if item.get("stargazers_count", 0) < 1:
+                            continue
+                        if not item.get("description"):
+                            continue
+                        repos.append({
+                            "uid": uid,
+                            "type": "github",
+                            "name": item["full_name"],
+                            "description": item["description"],
+                            "stars": item["stargazers_count"],
+                            "url": item["html_url"],
+                            "updated_at": item["updated_at"],
+                            "topics": item.get("topics", []),
+                            "language": item.get("language"),
+                        })
+                    break
+            except Exception as e:
+                logger.warning(f"GitHub search error for '{query}': {e}")
+                break
+        await asyncio.sleep(1.5)
     return repos
 
 async def fetch_service_free_info(session: aiohttp.ClientSession) -> list[dict]:
-    """Проверяет наличие бесплатного тарифа на страницах сервисов."""
     results = []
     headers = {"User-Agent": "Mozilla/5.0 (compatible; VibeCodingScout/1.0)"}
     for service in SERVICE_PAGES:
@@ -173,10 +175,8 @@ async def fetch_service_free_info(session: aiohttp.ClientSession) -> list[dict]:
                 text = await resp.text()
                 soup = BeautifulSoup(text, "html.parser")
                 page_text = soup.get_text().lower()
-                # Ищем ключевые слова, указывающие на бесплатность
                 free_keywords = ["free", "start for free", "free tier", "free plan", "no credit card"]
                 if any(kw in page_text for kw in free_keywords):
-                    # Пытаемся найти ссылку на цены
                     pricing_link = None
                     for a in soup.find_all("a", href=True):
                         if "pricing" in a["href"] or "price" in a["href"]:
@@ -197,8 +197,8 @@ async def fetch_service_free_info(session: aiohttp.ClientSession) -> list[dict]:
             logger.warning(f"Error scraping {service['name']}: {e}")
     return results
 
-# ============ АНАЛИЗ GROK ============
-async def analyze_with_grok(tool: dict) -> Optional[dict]:
+# ============ АНАЛИЗ GROQ ============
+async def analyze_with_llm(tool: dict) -> Optional[dict]:
     system_prompt = (
         "Ты — эксперт по вайб-кодингу и AI-инструментам для быстрой разработки. "
         "Оцени инструмент по шкалам 1-10: usefulness, innovation, community, free_confidence. "
@@ -215,8 +215,8 @@ async def analyze_with_grok(tool: dict) -> Optional[dict]:
     )
     try:
         response = await asyncio.to_thread(
-            lambda: xai_client.chat.completions.create(
-                model="grok-2-1212",  # актуальная модель
+            lambda: groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -229,23 +229,21 @@ async def analyze_with_grok(tool: dict) -> Optional[dict]:
         result = json.loads(response.choices[0].message.content)
         if result.get("reject"):
             return None
-        # Добавляем поля
         result["name"] = tool["name"]
         result["url"] = tool["url"]
         result["stars"] = tool.get("stars", 0)
         return result
     except Exception as e:
-        logger.warning(f"Grok analysis error for {tool['name']}: {e}")
+        logger.warning(f"LLM analysis error for {tool['name']}: {e}")
         return None
 
 # ============ ФОРМАТ ПОСТА ============
 def format_telegram_post(tools: list[dict]) -> str:
     if not tools:
         return ""
-    # Сортируем по общей полезности
     tools.sort(key=lambda x: x.get("usefulness", 0) + x.get("innovation", 0), reverse=True)
     lines = ["🛠️ <b>Топ бесплатных инструментов для вайб-кодинга</b>\n"]
-    for t in tools[:3]:  # не больше 3 в одном посте
+    for t in tools[:3]:
         name = html.escape(t["name"])
         url = t["url"]
         summary = t.get("summary", "Быстрый AI-помощник для разработки")
@@ -276,7 +274,6 @@ async def main():
     logger.info("🚀 Vibe Coding Scout started")
     async with aiohttp.ClientSession() as session:
         try:
-            # Сбор источников
             github_tools = await fetch_github_repos(session)
             logger.info(f"🔍 GitHub candidates: {len(github_tools)}")
             service_tools = await fetch_service_free_info(session)
@@ -287,18 +284,16 @@ async def main():
                 logger.info("Нет новых инструментов.")
                 return
 
-            # Анализ Grok
             approved = []
             for tool in all_candidates:
-                analysis = await analyze_with_grok(tool)
+                analysis = await analyze_with_llm(tool)
                 if analysis:
                     approved.append(analysis)
                     state.mark_posted(tool["uid"], tool["name"], tool.get("description", ""))
-                await asyncio.sleep(0.6)  # уважение к лимитам Grok
+                await asyncio.sleep(0.6)
 
-            logger.info(f"✅ После Grok одобрено: {len(approved)}")
+            logger.info(f"✅ После Groq одобрено: {len(approved)}")
 
-            # Публикация
             if approved:
                 post = format_telegram_post(approved)
                 if post:
@@ -307,7 +302,6 @@ async def main():
                 logger.info("Ничего достойного публикации.")
         except Exception as e:
             logger.exception("Критическая ошибка в main")
-        # session закроется автоматически при выходе из async with
 
 if __name__ == "__main__":
     asyncio.run(main())
