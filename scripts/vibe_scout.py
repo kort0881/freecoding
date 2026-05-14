@@ -53,7 +53,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ============ RATE LIMITER для Groq ============
 class GroqRateLimiter:
-    def __init__(self, max_rpm: int = 25):
+    def __init__(self, max_rpm: int = 20):   # снизили до 20
         self.max_rpm = max_rpm
         self.requests = []
 
@@ -66,8 +66,10 @@ class GroqRateLimiter:
             await asyncio.sleep(wait)
             self.requests = []
         self.requests.append(now)
+        # Дополнительная пауза 0.5 сек между запросами
+        await asyncio.sleep(0.5)
 
-rate_limiter = GroqRateLimiter(max_rpm=25)
+rate_limiter = GroqRateLimiter(max_rpm=20)
 
 # ============ ИСТОЧНИКИ ============
 GITHUB_QUERIES = [
@@ -279,6 +281,7 @@ async def fetch_product_hunt(session: aiohttp.ClientSession) -> list[dict]:
         async with session.post("https://api.producthunt.com/v2/api/graphql",
                                 headers=headers, json=payload,
                                 timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            logger.info(f"PH response status: {resp.status}")
             if resp.status != 200:
                 return []
             data = await resp.json()
@@ -311,21 +314,18 @@ async def analyze_with_llm(tool: dict) -> Optional[dict]:
     await rate_limiter.wait_if_needed()
 
     system_prompt = (
-        "Ты — строгий фильтр для Telegram-канала о БЕСПЛАТНЫХ AI-инструментах для вайб-кодинга.\n"
-        "Инструмент должен ПОЗВОЛЯТЬ генерировать код, приложения, веб-сайты с помощью ИИ без ручного написания кода.\n\n"
-        "СРАЗУ ОТКЛОНЯЙ (reject: true), если инструмент НЕ соответствует ХОТЯ БЫ ОДНОМУ из критериев:\n"
-        "- Не относится к разработке ПО / созданию приложений\n"
-        "- Не использует AI/LLM/ML для генерации кода или интерфейса\n"
-        "- Явно платный (нет бесплатного тарифа, требует кредитную карту для запуска)\n"
-        "- Не имеет документации (README с примерами) или последний коммит был более 6 месяцев назад\n"
-        "- Это просто «Hello World» или учебный проект без реального функционала\n"
-        "- Язык описания не содержит слов: AI, LLM, генерация, prompt, no‑code, low‑code, chat, assistant\n\n"
-        "Если подходит — оцени ПО СТРОГОСТИ:\n"
-        "- usefulness (1-10): насколько инструмент ускоряет разработку\n"
-        "- innovation (1-10): оригинальность подхода\n"
-        "- community (1-10): звёзды, форки, активность\n"
-        "- free_confidence (1-10): насколько уверен, что есть полноценный бесплатный доступ\n"
-        "Добавь summary до 200 символов на русском.\n"
+        "Ты — строгий редактор Telegram-канала о БЕСПЛАТНЫХ AI-инструментах для вайб-кодинга.\n"
+        "Инструмент должен позволять генерировать код, приложения, веб-сайты с помощью ИИ без ручного кода.\n\n"
+        "СРАЗУ ОТКЛОНЯЙ (reject: true), если:\n"
+        "- Не для разработки ПО / не AI / не генерирует код\n"
+        "- Платный (нет бесплатного тарифа, требует карту)\n"
+        "- Без документации или последний коммит >6 мес.\n"
+        "- Hello World или учебный проект без функционала\n\n"
+        "Если подходит — ОЦЕНИ (1-10): usefulness, innovation, community, free_confidence.\n"
+        "И напиши `summary` НА РУССКОМ, до 350 символов, ОБЯЗАТЕЛЬНО с деталями:\n"
+        "- Что конкретно делает инструмент (генерирует сайт, мобильное приложение, бэкенд?)\n"
+        "- Ключевые технологии (LLM, GPT-4, Claude, Stable Diffusion и т.д.)\n"
+        "- Чем выделяется на фоне аналогов\n"
         "Верни ТОЛЬКО JSON."
     )
     user_prompt = (
@@ -345,7 +345,7 @@ async def analyze_with_llm(tool: dict) -> Optional[dict]:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.3,
-                max_tokens=300,
+                max_tokens=400,
             )
         )
         result = json.loads(response.choices[0].message.content)
@@ -364,20 +364,20 @@ def format_telegram_post(tools: list[dict]) -> str:
     if not tools:
         return ""
     tools.sort(key=lambda x: x.get("usefulness", 0) + x.get("innovation", 0), reverse=True)
-    lines = ["🛠️ <b>Топ бесплатных инструментов для вайб-кодинга</b>\n"]
-    for t in tools[:3]:
+    lines = ["🛠️ <b>Лучшие бесплатные AI-инструменты для вайб-кодинга</b>\n"]
+    for t in tools[:5]:
         name = html.escape(t["name"])
         url = t["url"]
-        summary = t.get("summary", "Быстрый AI-помощник для разработки")
+        summary = t.get("summary", "Нет описания")
         usefulness = t.get("usefulness", "?")
         free_conf = t.get("free_confidence", "?")
         stars = t.get("stars", 0)
         lines.append(
-            f"• <a href='{url}'>{name}</a> (⭐ {stars})\n"
+            f"▸ <a href='{url}'>{name}</a> ⭐{stars}\n"
             f"  {summary}\n"
-            f"  Полезность: {usefulness}/10 | Бесплатность: {free_conf}/10\n"
+            f"  👍 {usefulness}/10 | 💸 {free_conf}/10\n"
         )
-    lines.append("\n#vibecoding #бесплатно #инструменты")
+    lines.append("#vibecoding #бесплатно #инструменты")
     return "\n".join(lines)
 
 # ============ TELEGRAM ============
@@ -414,7 +414,6 @@ async def main():
                 if analysis:
                     approved.append(analysis)
                     state.mark_posted(tool["uid"], tool["name"], tool.get("description", ""))
-                # rate_limiter уже управляет паузами, дополнительная задержка не нужна
 
             logger.info(f"✅ После Groq одобрено: {len(approved)}")
 
