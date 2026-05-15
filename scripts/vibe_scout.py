@@ -93,6 +93,33 @@ FORUM_RSS = [
 
 DEVTO_RSS = "https://dev.to/feed/tag/ai"
 
+# ========================= КАНОНИЧЕСКИЙ ID =========================
+def canonical_id(tool: dict) -> str:
+    """
+    Возвращает единый строковый идентификатор для инструмента,
+    чтобы gh_123 и ph_abc, ссылающиеся на один GitHub-репозиторий,
+    считались одинаковыми.
+    """
+    url = tool.get("url", "")
+    name = tool.get("name", "").lower()
+
+    # Если ссылка ведёт на GitHub — извлекаем owner/repo
+    gh_match = re.search(r"github\.com/([^/?#]+/[^/?#]+)", url)
+    if gh_match:
+        return f"github_{gh_match.group(1).lower()}"
+
+    # Если название выглядит как "owner/repo" (например, из GitHub без ссылки)
+    if "/" in name and "." not in name and len(name.split("/")) == 2:
+        return f"github_{name.lower()}"
+
+    # Для остальных — по домену + имени
+    domain_match = re.search(r"(?:https?://)?([^/?#]+)", url)
+    if domain_match:
+        domain = domain_match.group(1).replace("www.", "")
+        return f"{domain}_{name[:50]}"
+
+    return tool.get("uid", name)
+
 # ========================= STATE =========================
 class State:
     def __init__(self, filepath):
@@ -405,13 +432,16 @@ async def main():
             ph = await fetch_product_hunt(session)
             all_tools = github + services + ph
 
-            # дедупликация по uid
-            seen = set()
+            # Дедупликация по каноническому ID (убирает дубли из разных источников)
+            seen_canonical = set()
             unique_tools = []
             for t in all_tools:
-                if t["uid"] not in seen:
-                    seen.add(t["uid"])
+                cid = canonical_id(t)
+                if cid not in seen_canonical:
+                    seen_canonical.add(cid)
                     unique_tools.append(t)
+                else:
+                    logger.debug(f"Дубль по каноническому ID {cid}: {t['name']} (ориг uid {t['uid']})")
 
             logger.info(f"Кандидатов в инструменты: {len(unique_tools)}")
 
