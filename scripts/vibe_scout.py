@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
 """
-Vibe Coding Scout v4.0
-Новые источники статей:
-  - Simon Willison (топ AI/vibe-coding блог)
-  - VentureBeat AI, The Verge AI
-  - Medium (теги vibe-coding, ai-coding, llm)
-  - OpenAI News RSS
-  - Windsurf Blog + Changelog
-  - GitHub Blog, Replit Blog
-Новые источники продуктов:
-  - GitHub Trending (HTML-парсинг)
-  - There's An AI For That (RSS)
-  - BetaList (RSS)
-  - Futurepedia (HTML-парсинг, фильтр Free+Coding)
-  - The Batch by DeepLearning.AI (дайджест, для статей)
+Vibe Coding Scout v4.0 — адаптировано под OpenAI-совместимый Groq API
+Используется модель openai/gpt-oss-120b.
 """
 
 import os, json, asyncio, time, hashlib, html, logging, re
@@ -23,7 +11,7 @@ from bs4 import BeautifulSoup
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from groq import Groq
+from openai import AsyncOpenAI   # <-- заменили
 import feedparser
 
 # ========================= ЛОГИРОВАНИЕ =========================
@@ -48,7 +36,6 @@ CHANNEL_ID         = get_env("CHANNEL_ID")
 GITHUB_TOKEN       = os.getenv("GITHUB_TOKEN", "")
 PRODUCT_HUNT_TOKEN = os.getenv("PRODUCT_HUNT_TOKEN", "")
 
-# POST_MODE: "auto" (чередование), "products", "articles"
 POST_MODE = os.getenv("POST_MODE", "auto")
 
 CACHE_DIR  = os.getenv("CACHE_DIR", "cache_vibe")
@@ -58,7 +45,11 @@ STATE_FILE          = os.path.join(CACHE_DIR, "state_vibe.json")
 ARTICLES_STATE_FILE = os.path.join(CACHE_DIR, "articles_state.json")
 MODE_FILE           = os.path.join(CACHE_DIR, "last_mode.json")
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+# ========================= СОЗДАЁМ КЛИЕНТ =========================
+openai_client = AsyncOpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1",   # Groq OpenAI-совместимый эндпоинт
+)
 
 # ========================= ЧЕРЕДОВАНИЕ =========================
 def get_current_mode() -> str:
@@ -116,27 +107,20 @@ HN_RSS = [
     "https://hnrss.org/newest?q=claude+code&points=5",
 ]
 
-# Новые RSS-источники статей
 EXTRA_ARTICLE_RSS = [
-    # Simon Willison — лучший AI/vibe-coding блог, keyword-фильтр обязателен (много общего)
     ("https://simonwillison.net/atom/everything/",   "Simon Willison", True),
-    # Новостные агрегаторы
     ("https://venturebeat.com/category/ai/feed/",    "VentureBeat AI", True),
     ("https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "The Verge AI", True),
-    # Medium по тегам (keyword-фильтр снижает шум)
     ("https://medium.com/feed/tag/vibe-coding",      "Medium",         True),
     ("https://medium.com/feed/tag/ai-coding",        "Medium",         True),
     ("https://medium.com/feed/tag/llm",              "Medium",         True),
-    # Блоги компаний
     ("https://openai.com/news/rss.xml",              "OpenAI",         True),
     ("https://github.blog/feed/",                    "GitHub Blog",    True),
     ("https://blog.replit.com/rss.xml",              "Replit Blog",    True),
-    # Windsurf (через публичный RSS-репозиторий Olshansk)
     ("https://raw.githubusercontent.com/Olshansk/rss-feeds/refs/heads/main/feeds/feed_windsurf_blog.xml",
      "Windsurf Blog", True),
     ("https://raw.githubusercontent.com/Olshansk/rss-feeds/refs/heads/main/feeds/feed_windsurf_changelog.xml",
      "Windsurf Changelog", True),
-    # The Batch — еженедельный AI-дайджест DeepLearning.AI
     ("https://raw.githubusercontent.com/Olshansk/rss-feeds/refs/heads/main/feeds/feed_the_batch.xml",
      "The Batch", True),
 ]
@@ -257,20 +241,12 @@ async def _parse_rss(session: aiohttp.ClientSession, url: str, source: str,
 
 async def fetch_all_articles(session: aiohttp.ClientSession) -> list[dict]:
     tasks = []
-
-    # Habr (тематические хабы — без фильтра)
     for url in HABR_RSS:
         tasks.append(_parse_rss(session, url, "Habr", keyword_filter=False))
-
-    # HN
     for url in HN_RSS:
         tasks.append(_parse_rss(session, url, "HN", keyword_filter=True))
-
-    # dev.to и Lobsters
     tasks.append(_parse_rss(session, DEVTO_RSS,    "dev.to",   keyword_filter=True))
     tasks.append(_parse_rss(session, LOBSTERS_RSS, "Lobsters", keyword_filter=True))
-
-    # Новые источники
     for url, src, kw_filter in EXTRA_ARTICLE_RSS:
         tasks.append(_parse_rss(session, url, src, keyword_filter=kw_filter))
 
@@ -286,11 +262,9 @@ async def fetch_all_articles(session: aiohttp.ClientSession) -> list[dict]:
                 seen.add(a["uid"])
                 all_articles.append(a)
 
-    # Разбиваем: Habr отдельно, всё остальное отдельно
     non_habr = [a for a in all_articles if a["source"] != "Habr"]
     habr     = [a for a in all_articles if a["source"] == "Habr"]
 
-    # Чередуем: 2 не-Хабра, 1 Хабр — чтобы разнообразить
     mixed: list[dict] = []
     i, j, nh_per_h = 0, 0, 2
     while i < len(non_habr) or j < len(habr):
@@ -300,7 +274,6 @@ async def fetch_all_articles(session: aiohttp.ClientSession) -> list[dict]:
         if j < len(habr):
             mixed.append(habr[j]); j += 1
 
-    # Счётчик по источникам для лога
     src_counts: dict[str, int] = {}
     for a in mixed:
         src_counts[a["source"]] = src_counts.get(a["source"], 0) + 1
@@ -359,12 +332,7 @@ async def fetch_github_repos(session: aiohttp.ClientSession) -> list[dict]:
         await asyncio.sleep(1.2)
     return repos
 
-# ========================= GITHUB TRENDING (новый) =========================
 async def fetch_github_trending(session: aiohttp.ClientSession) -> list[dict]:
-    """
-    Парсит страницу GitHub Trending (weekly), ищет AI/coding репозитории.
-    Не требует токена.
-    """
     url     = "https://github.com/trending?since=weekly&spoken_language_code=en"
     headers = {"User-Agent": "VibeScout/4.0", "Accept-Language": "en-US"}
     results: list[dict] = []
@@ -376,21 +344,18 @@ async def fetch_github_trending(session: aiohttp.ClientSession) -> list[dict]:
                 return []
             soup = BeautifulSoup(await resp.text(), "html.parser")
             for article in soup.select("article.Box-row")[:20]:
-                # Название репозитория
                 h2 = article.select_one("h2 a")
                 if not h2:
                     continue
-                repo_path = h2["href"].strip("/")   # "owner/repo"
+                repo_path = h2["href"].strip("/")
                 repo_url  = f"https://github.com/{repo_path}"
                 uid       = f"trend_{hashlib.md5(repo_path.encode()).hexdigest()[:12]}"
                 if product_state.is_posted(uid):
                     continue
-                # Описание
                 p = article.select_one("p")
                 desc = p.get_text(strip=True).lower() if p else ""
                 if not any(k in desc or k in repo_path.lower() for k in AI_KEYWORDS):
                     continue
-                # Звёзды (total)
                 stars_el = article.select_one("a[href$='/stargazers']")
                 stars = 0
                 if stars_el:
@@ -410,9 +375,7 @@ async def fetch_github_trending(session: aiohttp.ClientSession) -> list[dict]:
         logger.warning(f"GitHub Trending: {e}")
     return results
 
-# ========================= THERE'S AN AI FOR THAT (новый) =========================
 async def fetch_theresanai(session: aiohttp.ClientSession) -> list[dict]:
-    """RSS-лента новых AI-инструментов с theresanaiforthat.com"""
     url     = "https://theresanaiforthat.com/rss/new-ais/"
     headers = {"User-Agent": "VibeScout/4.0"}
     CODING_TAGS = ["coding","code","developer","programming","no-code","low-code","ai editor","vibe"]
@@ -444,9 +407,7 @@ async def fetch_theresanai(session: aiohttp.ClientSession) -> list[dict]:
         logger.warning(f"There's An AI For That: {e}")
     return results
 
-# ========================= BETALIST (новый) =========================
 async def fetch_betalist(session: aiohttp.ClientSession) -> list[dict]:
-    """RSS ранних стартапов с BetaList — фильтруем AI/coding"""
     url     = "https://betalist.com/feed"
     headers = {"User-Agent": "VibeScout/4.0"}
     AI_TAGS = ["ai","llm","gpt","code","developer","no-code","vibe","automation","chatbot","openai"]
@@ -478,12 +439,7 @@ async def fetch_betalist(session: aiohttp.ClientSession) -> list[dict]:
         logger.warning(f"BetaList: {e}")
     return results
 
-# ========================= FUTUREPEDIA (новый) =========================
 async def fetch_futurepedia(session: aiohttp.ClientSession) -> list[dict]:
-    """
-    Парсит страницу Futurepedia с фильтром Free + Coding.
-    Использует публичный HTML без авторизации.
-    """
     url     = "https://www.futurepedia.io/ai-tools/coding?sort=new&pricing=Free"
     headers = {"User-Agent": "VibeScout/4.0"}
     results: list[dict] = []
@@ -493,7 +449,6 @@ async def fetch_futurepedia(session: aiohttp.ClientSession) -> list[dict]:
                 logger.warning(f"Futurepedia → HTTP {resp.status}")
                 return []
             soup = BeautifulSoup(await resp.text(), "html.parser")
-            # Карточки инструментов — ищем ссылки с /tool/ в пути
             for a_tag in soup.select("a[href*='/tool/']")[:20]:
                 href = a_tag.get("href", "")
                 if not href.startswith("http"):
@@ -518,7 +473,6 @@ async def fetch_futurepedia(session: aiohttp.ClientSession) -> list[dict]:
         logger.warning(f"Futurepedia: {e}")
     return results
 
-# ========================= PRODUCT HUNT =========================
 async def fetch_product_hunt(session: aiohttp.ClientSession) -> list[dict]:
     if not PRODUCT_HUNT_TOKEN:
         return []
@@ -595,13 +549,11 @@ async def analyze_product(tool: dict) -> Optional[dict]:
     )
     user = f"Инструмент: {tool['name']}\nОписание: {tool.get('description','')}\nURL: {tool['url']}"
     try:
-        resp = await asyncio.to_thread(
-            lambda: groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role":"system","content":system},{"role":"user","content":user}],
-                response_format={"type":"json_object"},
-                temperature=0.4, max_tokens=500,
-            )
+        resp = await openai_client.chat.completions.create(
+            model="openai/gpt-oss-120b",    # новая модель
+            messages=[{"role":"system","content":system},{"role":"user","content":user}],
+            response_format={"type":"json_object"},
+            temperature=0.4, max_tokens=500,
         )
         data = json.loads(resp.choices[0].message.content)
         if data.get("reject"):
@@ -627,13 +579,11 @@ async def analyze_article(article: dict) -> Optional[dict]:
         f"Ссылка: {article['link']}"
     )
     try:
-        resp = await asyncio.to_thread(
-            lambda: groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role":"system","content":system},{"role":"user","content":user}],
-                response_format={"type":"json_object"},
-                temperature=0.75, max_tokens=2300,
-            )
+        resp = await openai_client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role":"system","content":system},{"role":"user","content":user}],
+            response_format={"type":"json_object"},
+            temperature=0.75, max_tokens=2300,
         )
         data = json.loads(resp.choices[0].message.content)
         if data.get("reject"):
@@ -695,7 +645,6 @@ async def main():
 
             all_tools = github + trending + services + ph + taat + beta + futura
 
-            # Дедупликация по каноническому ID
             seen_cid: set[str] = set()
             unique_tools: list[dict] = []
             for t in all_tools:
@@ -704,7 +653,6 @@ async def main():
                     seen_cid.add(cid)
                     unique_tools.append(t)
 
-            # Лог по источникам
             src_label = {
                 "gh_": "GitHub Search", "trend_": "Trending",
                 "sv_": "Services", "ph_": "Product Hunt",
