@@ -619,14 +619,12 @@ async def send_telegram(text: str):
     if not text:
         logger.warning("⚠️ Текст пуст, отправка пропущена")
         return
+
     # Обрезаем до 4096 символов (лимит Telegram)
     if len(text) > 4096:
         logger.warning(f"⚠️ Пост слишком длинный ({len(text)} символов), обрезаем до 4096")
-        text = text[:4096]
-        # Дополнительно обрезаем по последнему пробелу, чтобы не рвать слова
-        last_space = text.rfind(' ')
-        if last_space > 3500:
-            text = text[:last_space] + '…'
+        text = text[:4096] + "…"   # добавляем многоточие, чтобы показать обрыв
+
     bot = Bot(token=TELEGRAM_BOT_TOKEN,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
