@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from openai import AsyncOpenAI   # <-- заменили
+from openai import AsyncOpenAI
 import feedparser
 
 # ========================= ЛОГИРОВАНИЕ =========================
@@ -48,7 +48,7 @@ MODE_FILE           = os.path.join(CACHE_DIR, "last_mode.json")
 # ========================= СОЗДАЁМ КЛИЕНТ =========================
 openai_client = AsyncOpenAI(
     api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1",   # Groq OpenAI-совместимый эндпоинт
+    base_url="https://api.groq.com/openai/v1",
 )
 
 # ========================= ЧЕРЕДОВАНИЕ =========================
@@ -550,7 +550,7 @@ async def analyze_product(tool: dict) -> Optional[dict]:
     user = f"Инструмент: {tool['name']}\nОписание: {tool.get('description','')}\nURL: {tool['url']}"
     try:
         resp = await openai_client.chat.completions.create(
-            model="openai/gpt-oss-120b",    # новая модель
+            model="openai/gpt-oss-120b",
             messages=[{"role":"system","content":system},{"role":"user","content":user}],
             response_format={"type":"json_object"},
             temperature=0.4, max_tokens=500,
@@ -616,6 +616,17 @@ def format_product_post(tools: list[dict]) -> str:
 
 # ========================= ОТПРАВКА =========================
 async def send_telegram(text: str):
+    if not text:
+        logger.warning("⚠️ Текст пуст, отправка пропущена")
+        return
+    # Обрезаем до 4096 символов (лимит Telegram)
+    if len(text) > 4096:
+        logger.warning(f"⚠️ Пост слишком длинный ({len(text)} символов), обрезаем до 4096")
+        text = text[:4096]
+        # Дополнительно обрезаем по последнему пробелу, чтобы не рвать слова
+        last_space = text.rfind(' ')
+        if last_space > 3500:
+            text = text[:last_space] + '…'
     bot = Bot(token=TELEGRAM_BOT_TOKEN,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
