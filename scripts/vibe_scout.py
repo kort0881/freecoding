@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Vibe Coding Scout v4.0 — адаптировано под OpenAI-совместимый Groq API
-Используется модель openai/gpt-oss-120b.
+Vibe Coding Scout v4.0 — адаптировано под оригинальный Groq API
+Используется модель openai/gpt-oss-120b (через Groq SDK).
 """
 
 import os, json, asyncio, time, hashlib, html, logging, re
@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from openai import AsyncOpenAI
+from groq import Groq   # <--- оригинальный Groq
 import feedparser
 
 # ========================= ЛОГИРОВАНИЕ =========================
@@ -45,11 +45,8 @@ STATE_FILE          = os.path.join(CACHE_DIR, "state_vibe.json")
 ARTICLES_STATE_FILE = os.path.join(CACHE_DIR, "articles_state.json")
 MODE_FILE           = os.path.join(CACHE_DIR, "last_mode.json")
 
-# ========================= СОЗДАЁМ КЛИЕНТ =========================
-openai_client = AsyncOpenAI(
-    api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1",
-)
+# ========================= СОЗДАЁМ КЛИЕНТ GROQ =========================
+groq_client = Groq(api_key=GROQ_API_KEY)   # синхронный
 
 # ========================= ЧЕРЕДОВАНИЕ =========================
 def get_current_mode() -> str:
@@ -537,7 +534,7 @@ async def fetch_service_free_info(session: aiohttp.ClientSession) -> list[dict]:
             pass
     return results
 
-# ========================= АНАЛИЗ =========================
+# ========================= АНАЛИЗ (через Groq) =========================
 async def analyze_product(tool: dict) -> Optional[dict]:
     await rate_limiter.wait_if_needed()
     system = (
@@ -549,11 +546,13 @@ async def analyze_product(tool: dict) -> Optional[dict]:
     )
     user = f"Инструмент: {tool['name']}\nОписание: {tool.get('description','')}\nURL: {tool['url']}"
     try:
-        resp = await openai_client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[{"role":"system","content":system},{"role":"user","content":user}],
-            response_format={"type":"json_object"},
-            temperature=0.4, max_tokens=500,
+        resp = await asyncio.to_thread(
+            lambda: groq_client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                response_format={"type":"json_object"},
+                temperature=0.4, max_tokens=500,
+            )
         )
         data = json.loads(resp.choices[0].message.content)
         if data.get("reject"):
@@ -579,11 +578,13 @@ async def analyze_article(article: dict) -> Optional[dict]:
         f"Ссылка: {article['link']}"
     )
     try:
-        resp = await openai_client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[{"role":"system","content":system},{"role":"user","content":user}],
-            response_format={"type":"json_object"},
-            temperature=0.75, max_tokens=2300,
+        resp = await asyncio.to_thread(
+            lambda: groq_client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                response_format={"type":"json_object"},
+                temperature=0.75, max_tokens=2300,
+            )
         )
         data = json.loads(resp.choices[0].message.content)
         if data.get("reject"):
@@ -614,16 +615,18 @@ def format_product_post(tools: list[dict]) -> str:
     lines.append("\n#vibecoding #ai #бесплатно")
     return "\n".join(lines)
 
-# ========================= ОТПРАВКА =========================
+# ========================= ОТПРАВКА (с правильной обрезкой) =========================
 async def send_telegram(text: str):
     if not text:
         logger.warning("⚠️ Текст пуст, отправка пропущена")
         return
 
-    # Обрезаем до 4096 символов (лимит Telegram)
-    if len(text) > 4096:
-        logger.warning(f"⚠️ Пост слишком длинный ({len(text)} символов), обрезаем до 4096")
-        text = text[:4096] + "…"   # добавляем многоточие, чтобы показать обрыв
+    # Telegram лимит – 4096 символов. Оставляем запас 10 символов.
+    MAX_LEN = 4090
+
+    if len(text) > MAX_LEN:
+        logger.warning(f"⚠️ Пост слишком длинный ({len(text)} символов), обрезаем до {MAX_LEN}")
+        text = text[:MAX_LEN] + "…"
 
     bot = Bot(token=TELEGRAM_BOT_TOKEN,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -638,7 +641,7 @@ async def send_telegram(text: str):
 # ========================= MAIN =========================
 async def main():
     mode = get_current_mode()
-    logger.info(f"🚀 Vibe Coding Scout v4.0 | режим: {mode}")
+    logger.info(f"🚀 Vibe Coding Scout v4.0 (Groq SDK) | режим: {mode}")
 
     async with aiohttp.ClientSession() as session:
 
