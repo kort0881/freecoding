@@ -2,4 +2,5 @@ aiohttp>=3.9
 aiogram>=3.0
 beautifulsoup4>=4.12
 feedparser>=6.0
-openai>=1.0.0
+groq>=0.15.0
+lxml>=6.0
