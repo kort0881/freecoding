@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from groq import Groq   # <--- оригинальный Groq
+from groq import Groq
 import feedparser
 
 # ========================= ЛОГИРОВАНИЕ =========================
@@ -46,7 +46,7 @@ ARTICLES_STATE_FILE = os.path.join(CACHE_DIR, "articles_state.json")
 MODE_FILE           = os.path.join(CACHE_DIR, "last_mode.json")
 
 # ========================= СОЗДАЁМ КЛИЕНТ GROQ =========================
-groq_client = Groq(api_key=GROQ_API_KEY)   # синхронный
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ========================= ЧЕРЕДОВАНИЕ =========================
 def get_current_mode() -> str:
@@ -563,13 +563,14 @@ async def analyze_product(tool: dict) -> Optional[dict]:
         logger.warning(f"analyze_product: {e}")
         return None
 
+# ========================= ИСПРАВЛЕННАЯ analyze_article =========================
 async def analyze_article(article: dict) -> Optional[dict]:
     await rate_limiter.wait_if_needed()
     system = (
-        "Ты — редактор Telegram-канала о вайб-кодинге (создание ПО через AI).\n"
-        "Преврати материал в живой, полезный пост на русском (1700-3200 символов).\n"
-        "Для обсуждений выдели лучшие советы и сравнения инструментов.\n"
-        "Если тема совсем не про AI-разработку/вайб-кодинг — {\"reject\": true}.\n"
+        "Ты — редактор Telegram-канала о вайб-кодинге.\n"
+        "Сделай краткий анонс (250–500 символов) на русском: суть, 1–2 ключевых факта, практический вывод.\n"
+        "Без воды, без рекламы, без призывов подписываться. Ссылку добавлять не нужно — она будет в конце.\n"
+        "Если тема не про AI-разработку/вайб-кодинг — {\"reject\": true}.\n"
         "Ответ строго JSON: {\"reject\": bool, \"post_text\": string}."
     )
     user = (
@@ -583,7 +584,8 @@ async def analyze_article(article: dict) -> Optional[dict]:
                 model="openai/gpt-oss-120b",
                 messages=[{"role":"system","content":system},{"role":"user","content":user}],
                 response_format={"type":"json_object"},
-                temperature=0.75, max_tokens=2300,
+                temperature=0.75,
+                max_tokens=700,   # уменьшено с 2300
             )
         )
         data = json.loads(resp.choices[0].message.content)
@@ -615,15 +617,13 @@ def format_product_post(tools: list[dict]) -> str:
     lines.append("\n#vibecoding #ai #бесплатно")
     return "\n".join(lines)
 
-# ========================= ОТПРАВКА (с правильной обрезкой) =========================
+# ========================= ОТПРАВКА =========================
 async def send_telegram(text: str):
     if not text:
         logger.warning("⚠️ Текст пуст, отправка пропущена")
         return
 
-    # Telegram лимит – 4096 символов. Оставляем запас 10 символов.
     MAX_LEN = 4090
-
     if len(text) > MAX_LEN:
         logger.warning(f"⚠️ Пост слишком длинный ({len(text)} символов), обрезаем до {MAX_LEN}")
         text = text[:MAX_LEN] + "…"
