@@ -1,7 +1,10 @@
 name: Vibe Articles (3x daily)
 on:
   schedule:
-    - cron: '0 9,15,21 * * *'
+    # 09:15 UTC = 12:15 МСК
+    # 15:15 UTC = 18:15 МСК
+    # 21:15 UTC = 00:15 МСК (след. дня)
+    - cron: '15 9,15,21 * * *'
   workflow_dispatch:
 jobs:
   run:
