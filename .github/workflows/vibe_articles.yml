@@ -1,10 +1,11 @@
+# Ровные часы: 12:00, 18:00, 00:00 MSK
 name: Vibe Articles (3x daily)
+
 on:
   schedule:
-    # Московское время: 12:38, 18:38, 00:38 (след. дня)
-    # UTC: 9:38, 15:38, 21:38
-    - cron: '38 9,15,21 * * *'
+    - cron: '0 9,15,21 * * *'   # UTC: 09,15,21 → MSK+3
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
